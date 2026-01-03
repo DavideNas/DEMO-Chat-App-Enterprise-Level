@@ -1,0 +1,19 @@
+{
+  "name": "@chatapp/auth-service",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@chatapp/common": "workspace:^",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1"
+  }
+}
