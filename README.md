@@ -90,7 +90,9 @@ Next add `packages/common/tsconfig.json` file with this content:
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
     "declaration": true,
     "declarationMap": true,
-    "composite": true
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true
   },
   "include": ["src"]
 }
@@ -99,7 +101,7 @@ Next add `packages/common/tsconfig.json` file with this content:
 Now to generate a scaffold for each packages install following plugins:
 
 ```sh
-bun add zod pino --cwd packages/common
+bun add zod pino pino-pretty --cwd packages/common
 ```
 
 Then create initial scaffold
@@ -207,6 +209,7 @@ Now that **logger** and **env** implementation is complete you can add `index.ts
 ```ts
 export * from "./env";
 export * from "./logger";
+export { z } from "zod";
 export type { Logger } from "pino";
 ```
 
@@ -268,3 +271,143 @@ then in dependencies attributes add also reference to common package
   // [...]
 }
 ```
+
+Now we need new plugin for `auth-service` so open folder and add it:
+
+```sh
+cd services/auth-service
+bun add -d @types/express @types/cors
+bun add cors helmet
+```
+
+A file for logger is needed in `services/auth-service/src/utils/logger.ts`:
+
+```ts
+import { createLogger } from "@chatapp/common";
+import type { Logger } from "@chatapp/common";
+
+export const logger: Logger = createLogger({
+  name: "auth-service",
+});
+```
+
+Create a file in `services/auth-service/app.ts` :
+
+```ts
+import express, { type Application } from "express";
+import cors from "cors";
+import helmet from "helmet";
+
+export const createApp = (): Application => {
+  const app = express();
+
+  app.use(helmet());
+  app.use(
+    cors({
+      origin: "*",
+      credentials: true,
+    })
+  );
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+
+  app.use((_req, res) => {
+    res.status(404).json({ message: "Not found" });
+  });
+
+  return app;
+};
+```
+
+Add new file and folder in `services/auth-service/src/config/env.ts` :
+
+```ts
+import "dotenv/config";
+import { createEnv, z } from "@chatapp/common";
+
+const envSchema = z.object({
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
+  AUTH_SERVICE_PORT: z.coerce.number().int().min(0).max(65_535).default(4003),
+});
+
+type EnvType = z.infer<typeof envSchema>;
+
+export const env: EnvType = createEnv(envSchema, {
+  serviceName: "auth-service",
+});
+
+export type Env = typeof env;
+```
+
+Create then new file in `services/auth-service/index.ts` :
+
+```ts
+import { createApp } from "@/app";
+import { createServer } from "http";
+import { env } from "@/config/env";
+import { logger } from "@/utils/logger";
+
+const main = async () => {
+  try {
+    const app = createApp();
+    const server = createServer(app);
+
+    const port = env.AUTH_SERVICE_PORT;
+
+    server.listen(port, () => {
+      logger.info({ port }, "Auth service is running");
+    });
+
+    const shutdown = () => {
+      logger.info("Shutting down auth service...");
+
+      Promise.all([])
+        .catch((error: unknown) => {
+          logger.error({ error }, "Error during shutdown tasks");
+        })
+        .finally(() => {
+          server.close(() => process.exit(0));
+        });
+    };
+
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  } catch (error) {
+    logger.error({ error }, "Failed to start auth service");
+    process.exit(1);
+  }
+};
+
+void main();
+```
+
+Then you can add in a new file in `services/auth-service/.env` this parameters:
+
+```
+NODE_ENV=development
+AUTH_SERVICE_PORT=4003
+```
+
+to make all this compatible add this "script" attribute to `services/auth-service/package.json` :
+
+```json
+"scripts" : {
+  "build": "tsc --project tsconfig.json",
+  "dev": "bun --watch src/index.ts",
+  "start": "node dist/index.js",
+  "lint": "eslint 'src/**/*.ts'",
+  "typecheck": "tsc --noEmit --project tsconfig.json",
+  "test": "echo 'No tests yet'",
+  "format": "prettier --check 'src/**/*.ts'"
+},
+```
+
+Finally test auth-service typing this command in VSCode terminal:
+
+```sh
+bun --cwd services/auth-service dev
+```
+
+PROSEGUE DAL MINUTO 1:10:44 del video https://www.youtube.com/watch?v=nCyvvMjO2ME
