@@ -13,7 +13,7 @@
     "moduleResolution": "Node", // switch with "bundler", "Node" fit better with Bun
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
-    "noEmit": false,
+    "noEmit": true,
 
     // Specify types for Bun and Node (mandatory)
     "types": ["bun", "node"],

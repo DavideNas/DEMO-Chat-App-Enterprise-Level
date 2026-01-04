@@ -101,7 +101,7 @@ Next add `packages/common/tsconfig.json` file with this content:
 Now to generate a scaffold for each packages install following plugins:
 
 ```sh
-bun add zod pino pino-pretty --cwd packages/common
+bun add zod@3 pino pino-pretty express @types/express --cwd packages/common
 ```
 
 Then create initial scaffold
@@ -209,6 +209,7 @@ Now that **logger** and **env** implementation is complete you can add `index.ts
 ```ts
 export * from "./env";
 export * from "./logger";
+export * from "./errors/http-error"; // only after error dist implement
 export { z } from "zod";
 export type { Logger } from "pino";
 ```
@@ -277,7 +278,7 @@ Now we need new plugin for `auth-service` so open folder and add it:
 ```sh
 cd services/auth-service
 bun add -d @types/express @types/cors
-bun add cors helmet
+bun add cors helmet sequelize mysql2
 ```
 
 A file for logger is needed in `services/auth-service/src/utils/logger.ts`:
@@ -297,6 +298,7 @@ Create a file in `services/auth-service/app.ts` :
 import express, { type Application } from "express";
 import cors from "cors";
 import helmet from "helmet";
+// import { errorHandler } from "./middleware/error-handler"; → de-comment only after middleware
 
 export const createApp = (): Application => {
   const app = express();
@@ -315,6 +317,8 @@ export const createApp = (): Application => {
     res.status(404).json({ message: "Not found" });
   });
 
+  // app.use(errorHandler); → de-comment only after middleware
+
   return app;
 };
 ```
@@ -330,6 +334,7 @@ const envSchema = z.object({
     .enum(["development", "production", "test"])
     .default("development"),
   AUTH_SERVICE_PORT: z.coerce.number().int().min(0).max(65_535).default(4003),
+  // AUTH_DB_URL: z.string().min(1),  → de-comment this after mysql implementation
 });
 
 type EnvType = z.infer<typeof envSchema>;
@@ -348,9 +353,12 @@ import { createApp } from "@/app";
 import { createServer } from "http";
 import { env } from "@/config/env";
 import { logger } from "@/utils/logger";
+// import { connectToDatabase } from "@/db/sequelize";
 
 const main = async () => {
   try {
+    // await connectToDatabase();   → de-comment after sequelize.ts creation
+
     const app = createApp();
     const server = createServer(app);
 
@@ -410,4 +418,227 @@ Finally test auth-service typing this command in VSCode terminal:
 bun --cwd services/auth-service dev
 ```
 
-PROSEGUE DAL MINUTO 1:10:44 del video https://www.youtube.com/watch?v=nCyvvMjO2ME
+Now to manage errors we need to add a file in `packages/common/src/errors/http-error.ts` :
+
+```ts
+export class HttpError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    message: string,
+    public readonly details?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+```
+
+Now must add attribute to package.json file like this:
+
+```json
+"script": {
+  "build": "tsc"
+},
+```
+
+> At this point you must to add the **export** for the **_http-error_** in `packages\common\src\index.ts`
+
+Next execute command to generate **/dist** folder with **HttpError** definition class:
+
+```sh
+bun --cwd packages/common run build
+```
+
+After this create a file in `services\auth-service\src\middleware\error-handler.ts` adding this code:
+
+```ts
+import { HttpError } from "@chatapp/common";
+
+import type { ErrorRequestHandler } from "express";
+import { logger } from "@/utils/logger";
+
+export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
+  logger.error({ err, req }, "Unhandled error occurred");
+
+  const error = err instanceof HttpError ? err : undefined;
+  const statusCode = error?.statusCode ?? 500;
+  const message =
+    statusCode >= 500
+      ? "Internal Server Error"
+      : (error?.message ?? "Unknown Error");
+  const payload = error?.details
+    ? { message, details: error.details }
+    : { message };
+
+  res.status(statusCode).json(payload);
+
+  void _next();
+};
+```
+
+At this point you can de-comment integration of errorHandler in `auth-service/src/app.ts` file.
+
+Then rerun command to test new version of auth-service
+
+```sh
+bun --cwd services/auth-service dev
+```
+
+Add a new file in `packages/common/src/http/validate-request.ts`
+
+```ts
+import { HttpError } from "../errors/http-error";
+import type { NextFunction, Request, Response } from "express";
+import { ZodError, type AnyZodObject, type ZodType } from "zod";
+
+type Schema = AnyZodObject | ZodType;
+type ParamsRecord = Record<string, string>;
+type QueryRecord = Record<string, unknown>;
+
+export interface RequestValidationSchemas {
+  body?: Schema;
+  params?: Schema;
+  query?: Schema;
+}
+
+const formattedError = (error: ZodError) =>
+  error.errors.map((issue) => ({
+    path: issue.path.join("."),
+    message: issue.message,
+  }));
+
+export const validateRequest = (schemas: RequestValidationSchemas) => {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    try {
+      if (schemas.body) {
+        const parseBody = schemas.body.parse(req.body) as unknown;
+        req.body = parseBody;
+      }
+
+      if (schemas.params) {
+        const parsedParams = schemas.params.parse(req.params) as ParamsRecord;
+        req.params = parsedParams as Request["params"];
+      }
+
+      if (schemas.query) {
+        const parsedQuery = schemas.query.parse(req.query) as QueryRecord;
+        req.query = parsedQuery as Request["query"];
+      }
+      next();
+    } catch (error) {
+      if (error instanceof ZodError) {
+        next(
+          new HttpError(422, "Validation Error", {
+            issues: formattedError(error),
+          })
+        );
+        return;
+      }
+      next(error);
+    }
+  };
+};
+```
+
+Implement now the routes adding a file in `services/auth-service/src/routes/auth.routes.ts` with this code:
+
+```ts
+
+```
+
+---
+
+## Test with Docker
+
+As you finish the auth-service implementation you can create a docker compose to test microservices
+
+```yml
+services:
+  auth-db:
+    image: mysql:8.0
+    container_name: chatapp-auth.db
+    environment:
+      MYSQL_DATABASE: ${AUTH_DB_NAME:-chatapp_auth_service}
+      MYSQL_USER: ${AUTH_DB_USER:-chatapp_auth_user}
+      MYSQL_PASSWORD: ${AUTH_DB_PASSWORD:-chatapp_auth_password}
+      MYSQL_ROOT_PASSWORD: ${AUTH_DB_ROOT_PASSWORD:-root_password}
+    command: ["mysqld", "--default-authentication-plugin=mysql_native_password"]
+    ports:
+      - "${AUTH_DB_PORT:-3306}:3306"
+    volumes:
+      - auth-db-data:/var/lib/mysql
+    networks:
+      - chatapp-network
+
+volumes:
+  auth-db-data:
+
+networks:
+  chatapp-network:
+    driver: bridge
+```
+
+Add now sequelize to auth-service
+
+```sh
+cd services/auth-service
+bun add sequelize
+```
+
+then add url for DB in the .env file for auth-service
+
+```env
+//...
+
+AUTH_DB_URL=mysql://chatapp_auth_user:chatapp_auth_password@localhost:3306/chatapp_auth_service
+```
+
+So de-comment **_AUTH_DB_URL_** part in the `services/auth-service/src/config/env.ts` file.
+
+Create now a file in `services/auth-service/src/db/sequelize.ts` :
+
+```ts
+import { Sequelize } from "sequelize";
+import { env } from "@/config/env";
+import { logger } from "@/utils/logger";
+
+export const sequelize = new Sequelize(env.AUTH_DB_URL, {
+  dialect: "mysql",
+  logging:
+    env.NODE_ENV == "development"
+      ? (msg: unknown) => {
+          logger.debug({ sequelize: msg });
+        }
+      : false,
+  define: { underscored: true, freezeTableName: true },
+});
+
+export const connectToDatabase = async () => {
+  await sequelize.authenticate();
+  logger.info("Auth database connection established successfully.");
+};
+
+export const closeDatabase = async () => {
+  await sequelize.close();
+  logger.info("Auth database connection closed.");
+};
+```
+
+So you can de-comment **_connectToDatabase_** part in `services/auth-service/src/index.ts`
+
+Now make a new test of auth-service starting mysql connection with docker:
+
+- First open Docker Desktop and run `docker-compose up -d auth-db`
+- Then run service to test db connection implement `bun --cwd services/auth-service dev`
+
+> if run there will be no problem to see a message similar to :
+
+```sh
+INFO (auth-service/7564): Auth database connection established successfully.
+INFO (auth-service/7564): Auth service is running
+    port: 4003
+```
+
+---
+
+Prosegui dal minuto 2:01:55 del video https://www.youtube.com/watch?v=nCyvvMjO2ME
