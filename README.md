@@ -317,6 +317,8 @@ export const createApp = (): Application => {
     res.status(404).json({ message: "Not found" });
   });
 
+  // registerRoutes(app); → de-comment this after routes implementation
+
   // app.use(errorHandler); → de-comment only after middleware
 
   return app;
@@ -334,7 +336,11 @@ const envSchema = z.object({
     .enum(["development", "production", "test"])
     .default("development"),
   AUTH_SERVICE_PORT: z.coerce.number().int().min(0).max(65_535).default(4003),
-  // AUTH_DB_URL: z.string().min(1),  → de-comment this after mysql implementation
+  // AUTH_DB_URL: z.string().url(),  // → de-comment this after mysql implementation
+  // JWT_SECRET: z.string().min(32),  // → de-comment this after jwt implementation
+  // JWT_EXPIRES_IN: z.string().default("30m")
+  // JWT_REFRESH_SECRET: z.string().min(32),
+  // JWT_REFRESH_EXPIRES_IN: z.string().default("30d"),
 });
 
 type EnvType = z.infer<typeof envSchema>;
@@ -346,7 +352,7 @@ export const env: EnvType = createEnv(envSchema, {
 export type Env = typeof env;
 ```
 
-Create then new file in `services/auth-service/index.ts` :
+Create then new file in `services/auth-service/src/index.ts` :
 
 ```ts
 import { createApp } from "@/app";
@@ -354,10 +360,12 @@ import { createServer } from "http";
 import { env } from "@/config/env";
 import { logger } from "@/utils/logger";
 // import { connectToDatabase } from "@/db/sequelize";
+// import { initModels } from "@/models";
 
 const main = async () => {
   try {
     // await connectToDatabase();   → de-comment after sequelize.ts creation
+    // await initModels();    → de-comment this after models integration
 
     const app = createApp();
     const server = createServer(app);
@@ -371,7 +379,9 @@ const main = async () => {
     const shutdown = () => {
       logger.info("Shutting down auth service...");
 
-      Promise.all([])
+      Promise.all([
+        /*closeDatabase()*/
+      ]) // → de-comment this after sequelize implementation
         .catch((error: unknown) => {
           logger.error({ error }, "Error during shutdown tasks");
         })
@@ -540,12 +550,6 @@ export const validateRequest = (schemas: RequestValidationSchemas) => {
 };
 ```
 
-Implement now the routes adding a file in `services/auth-service/src/routes/auth.routes.ts` with this code:
-
-```ts
-
-```
-
 ---
 
 ## Test with Docker
@@ -591,6 +595,7 @@ then add url for DB in the .env file for auth-service
 //...
 
 AUTH_DB_URL=mysql://chatapp_auth_user:chatapp_auth_password@localhost:3306/chatapp_auth_service
+AUTH_DB_SSL=false
 ```
 
 So de-comment **_AUTH_DB_URL_** part in the `services/auth-service/src/config/env.ts` file.
@@ -641,4 +646,564 @@ INFO (auth-service/7564): Auth service is running
 
 ---
 
-Prosegui dal minuto 2:01:55 del video https://www.youtube.com/watch?v=nCyvvMjO2ME
+## Credentials Model
+
+In auth-service folder create a new file to manage model for user credentials in `src/models/user-credentials.model.ts`.  
+This file will manage the entire registration process by a unique model **UserCredentials** in mysql db by **sequelize** plugin.
+
+```ts
+import { DataTypes, Model, type Optional } from "sequelize";
+import { sequelize } from "@/db/sequelize";
+
+export interface UserCredentialsAttributes {
+  id: string;
+  email: string;
+  displayName: string;
+  passwordHash: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type UserCredentialsCreationAttributes = Optional<
+  UserCredentialsAttributes,
+  "id" | "createdAt" | "updatedAt"
+>;
+
+export class UserCredentials
+  extends Model<UserCredentialsAttributes, UserCredentialsCreationAttributes>
+  implements UserCredentialsAttributes
+{
+  declare id: string;
+  declare email: string;
+  declare displayName: string;
+  declare passwordHash: string;
+  declare createdAt: Date;
+  declare updatedAt: Date;
+}
+
+UserCredentials.init(
+  {
+    id: {
+      type: DataTypes.UUID,
+      primaryKey: true,
+      defaultValue: DataTypes.UUIDV4,
+    },
+    email: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      unique: true,
+      validate: {
+        isEmail: true,
+      },
+    },
+    passwordHash: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    displayName: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    createdAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW,
+    },
+    updatedAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW,
+    },
+  },
+  {
+    sequelize,
+    tableName: "user_credentials",
+  }
+);
+```
+
+After this add a file in `auth-service/src/models/index.ts`  
+This is needed to register model in sequelize system and sync it with mysql DB.
+
+```ts
+import { sequelize } from "@/db/sequelize";
+import { UserCredentials } from "@/models/user-credentials.model";
+// import { RefreshToken } from "@/models/refresh-token.model";
+
+export const initModels = async () => {
+  await sequelize.sync();
+};
+
+export { UserCredentials /*, RefreshToken */ }; // → de-comment this part only after refresh token implementation
+```
+
+Now you can de-comment **initModels** & **closeDatabase** part in `services/auth-service/src/index.ts`.
+
+Run service to test connection with model integration
+
+```sh
+docker-compose up -d auth-db
+bun --cwd services/auth-service dev   # Run this only after docker bootstrap
+```
+
+---
+
+## Adding refresh token management
+
+Create a file in `services/auth-service/src/models/refresh-token.model.ts` :
+
+```ts
+import { DataTypes, Model, type Optional } from "sequelize";
+import { sequelize } from "@/db/sequelize";
+import { UserCredentials } from "@/models/user-credentials.model";
+
+export interface RefreshTokenAttributes {
+  id: string;
+  userId: string;
+  tokenId: string;
+  expiresAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type RefreshTokenCreationAttributes = Optional<
+  RefreshTokenAttributes,
+  "id" | "createdAt" | "updatedAt"
+>;
+
+export class RefreshToken
+  extends Model<RefreshTokenAttributes, RefreshTokenCreationAttributes>
+  implements RefreshTokenAttributes
+{
+  declare id: string;
+  declare userId: string;
+  declare tokenId: string;
+  declare expiresAt: Date;
+  declare createdAt: Date;
+  declare updatedAt: Date;
+}
+
+RefreshToken.init(
+  {
+    id: {
+      type: DataTypes.UUID,
+      primaryKey: true,
+      defaultValue: DataTypes.UUIDV4,
+    },
+    userId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+    },
+    tokenId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+    },
+    expiresAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+    },
+    createdAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW,
+    },
+    updatedAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW,
+    },
+  },
+  {
+    sequelize,
+    tableName: "refresh_tokens",
+  }
+);
+
+UserCredentials.hasMany(RefreshToken, {
+  foreignKey: "userId",
+  as: "refreshTokens",
+  onDelete: "CASCADE",
+});
+
+RefreshToken.belongsTo(UserCredentials, {
+  foreignKey: "userId",
+  as: "user",
+});
+```
+
+De-comment now the RefreshToken implementation in `services/auth-service/src/models/index.ts`.
+
+---
+
+## Decoupling interface implement (with service layer)
+
+Create a file to implement different interfaces `services/auth-service/src/types/auth.ts`
+
+```ts
+export interface RegisterInput {
+  email: string;
+  password: string;
+  displayName: string;
+}
+
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+export interface UserData {
+  id: string;
+  email: string;
+  displayName: string;
+  createdAt: string;
+}
+
+export interface AuthToken {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface AuthResponse extends AuthToken {
+  user: UserData;
+}
+```
+
+Now add a plugin to manage hashing
+
+```sh
+bun add bcrypt jsonwebtoken --cwd services/auth-service
+bun add -d @types/jsonwebtoken @types/bcrypt --cwd services/auth-service
+```
+
+Then complete the .env constant for JWT management `services/auth-service/.env`:
+
+```
+// ...
+
+JWT_SECRET=your_jwt_secret_key
+JWT_EXPIRES_IN=30m
+JWT_REFRESH_SECRET=your_jwt_refresh_secret_key
+JWT_REFRESH_EXPIRES_IN=30d
+```
+
+> Now you can de-comment JWT part in `services/auth-service/src/config/env.ts`
+
+And add another file in the utils: `services/auth-service/src/utils/token.ts`
+
+```ts
+import bcrypt from "bcrypt";
+import jwt, { type Secret, type SignOptions } from "jsonwebtoken";
+import { env } from "@/config/env";
+
+const ACCESS_TOKEN: Secret = env.JWT_SECRET;
+const REFRESH_TOKEN: Secret = env.JWT_REFRESH_SECRET;
+const ACCESS_OPTIONS: SignOptions = {
+  expiresIn: env.JWT_EXPIRES_IN as SignOptions["expiresIn"],
+};
+const REFRESH_OPTIONS: SignOptions = {
+  expiresIn: env.JWT_REFRESH_EXPIRES_IN as SignOptions["expiresIn"],
+};
+
+export const hashPassword = async (password: string): Promise<string> => {
+  const saltRounds = 12;
+  return bcrypt.hash(password, saltRounds);
+};
+
+export const verifyPassword = async (
+  password: string,
+  hash: string
+): Promise<boolean> => {
+  return bcrypt.compare(password, hash);
+};
+
+export interface AccessTokenPayload {
+  sub: string; // userId
+  email: string;
+}
+
+export interface RefreshTokenPayload {
+  sub: string; // userId
+  tokenId: string;
+}
+
+export const signAccessToken = (payload: AccessTokenPayload): string => {
+  return jwt.sign(payload, ACCESS_TOKEN, ACCESS_OPTIONS);
+};
+
+export const signRefreshToken = (payload: RefreshTokenPayload): string => {
+  return jwt.sign(payload, REFRESH_TOKEN, REFRESH_OPTIONS);
+};
+
+export const verifyRefreshToken = (payload: string): RefreshTokenPayload => {
+  return jwt.verify(payload, REFRESH_TOKEN) as RefreshTokenPayload;
+};
+```
+
+Then implement services manager in `services/auth-service/src/services/auth.service.ts`
+
+```ts
+import { sequelize } from "@/db/sequelize";
+import { RefreshToken, UserCredentials } from "@/models";
+import type { AuthResponse, RegisterInput } from "@/types/auth";
+import { hashPassword, signAccessToken, signRefreshToken } from "@/utils/token";
+import { HttpError } from "@chatapp/common";
+import { Op, Transaction } from "sequelize";
+import crypto from "crypto";
+
+const REFRESH_TOKEN_TL_DAYS = 30;
+
+export const register = async (input: RegisterInput): Promise<AuthResponse> => {
+  const existing = await UserCredentials.findOne({
+    where: { email: { [Op.eq]: input.email } },
+  });
+
+  if (existing) {
+    throw new HttpError(400, "User with this email already exists");
+  }
+
+  const transaction = await sequelize.transaction();
+
+  try {
+    const passwordHash = await hashPassword(input.password);
+    const user = await UserCredentials.create(
+      {
+        email: input.email,
+        displayName: input.displayName,
+        passwordHash,
+      },
+      { transaction }
+    );
+
+    const refreshTokenRecord = await createRefreshToken(user.id, transaction);
+    await transaction.commit();
+
+    const accessToken = signAccessToken({ sub: user.id, email: user.email });
+    const refreshToken = signRefreshToken({
+      sub: user.id,
+      tokenId: refreshTokenRecord.tokenId,
+    });
+
+    const userData = {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      createdAt: user.createdAt.toISOString(),
+    };
+
+    // TODO: publish event UserRegistered
+
+    return { accessToken, refreshToken, user: userData };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+};
+
+const createRefreshToken = async (
+  userId: string,
+  transaction?: Transaction
+) => {
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + REFRESH_TOKEN_TL_DAYS);
+
+  const tokenId = crypto.randomUUID();
+
+  const record = await RefreshToken.create(
+    {
+      userId,
+      tokenId,
+
+      expiresAt,
+    },
+    { transaction }
+  );
+  return record;
+};
+```
+
+## Controller Handler
+
+Before go further with controller handler, we need to manage error for **async-handler**.  
+Add new file in `package/common/src/http/async-handler.ts`.
+
+```ts
+import type { NextFunction, RequestHandler, Request, Response } from "express";
+
+export type AsyncHandler = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => Promise<unknown>;
+
+const toError = (error: unknown): Error => {
+  return error instanceof Error ? error : new Error(String(error));
+};
+
+const forwardError = (nextFn: ErrorForwarder, error: Error) => {
+  nextFn(toError(error));
+};
+
+type ErrorForwarder = (error: Error) => void;
+
+export const asyncHandler = (handler: AsyncHandler): RequestHandler => {
+  return (req, res, next) => {
+    void handler(req, res, next).catch((error) => {
+      forwardError(next as ErrorForwarder, error);
+    });
+  };
+};
+```
+
+And in `packages/common/src/index.ts` add the exportation for async-errors
+
+```ts
+// [...]
+export * from "./http/async-handler";
+export * from "./http/validate-request";
+// [...]
+```
+
+After add a controller for authentications services in `services/auth-service/src/controllers/auth.controller.ts` :
+
+```ts
+import { register } from "@/services/auth.service";
+import type { RegisterInput } from "@/types/auth";
+import { asyncHandler } from "@chatapp/common";
+import type { RequestHandler } from "express";
+
+export const requestHandler: RequestHandler = asyncHandler(async (req, res) => {
+  const payload = req.body as RegisterInput;
+  const tokens = await register(payload);
+  res.status(201).json(tokens);
+});
+```
+
+---
+
+## Implement routes
+
+Implement now the routes adding a file in `services/auth-service/src/routes/auth.routes.ts` with this code:
+
+```ts
+import { Router } from "express";
+import { validateRequest } from "@chatapp/common";
+import { registerHandler } from "@/controllers/auth.controller";
+// import { registerSchema } from "@/routes/auth.schema";
+
+export const authRouter: Router = Router();
+
+authRouter.post(
+  "/register",
+  validateRequest({
+    /* body: registerSchema.shape.body */
+  }),
+  registerHandler
+);
+// de-comment body part only after adding auth.schema file
+```
+
+In `services/auth-services/src/app.ts` de-comment **registerRoutes** part.
+
+After add new file in `services/auth-service/src/routes/index.ts` :
+
+```ts
+import { authRouter } from "@/routes/auth.routes";
+import type { Router } from "express";
+
+export const registerRoutes = (app: Router) => {
+  app.use("/auth", authRouter);
+};
+```
+
+Before test and compile demo we must to create a temp JWT:
+
+- Open following website https://key-generator.com/random-jwt-secret-key-generator
+- Then select 32 chars (128 bits)
+- Copy generated key
+- Replace **your_jwt_secret_key** in `service/auth-service/.env` as **JWT_SECRET** value
+
+> Make now the same procedure to create a temp **JWT_REFRESH_SECRET**
+
+Now test again auth-service by typing this bash command
+
+```sh
+docker-compose up -d auth-db
+bun --cwd services\auth-service dev
+```
+
+If run go further and add new fil in `service/auth-service/src/routes/auth.schema.ts`
+
+```ts
+import { z } from "@chatapp/common";
+
+export const registerSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    password: z.string().min(8),
+    displayName: z.string().min(3).max(30),
+  }),
+});
+
+export const loginSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    password: z.string().min(8),
+  }),
+});
+
+export const refreshSchema = z.object({
+  body: z.object({
+    refreshToken: z.string(),
+  }),
+});
+
+export const revokeSchema = z.object({
+  body: z.object({
+    userId: z.string().uuid(),
+  }),
+});
+```
+
+Now you can de-comment **registerSchema** part `services/auth-service/src/routes/auth.routes.ts`.
+
+---
+
+## TEST API
+
+Now to test db API you can add a new connection to mysql DB with the same credentials from **AUTH_DB_URL** value (in .env file).
+
+To do this connection you can open mysql container from Docker , select tab EXEC and type this string
+
+```sh
+mysql -u chatapp_auth_user -pchatapp_auth_password chatapp_auth_service
+```
+
+Then can test register api by open Postman and adding following parameters:
+
+- Verb : POST
+- Url : http://localhost:4003/auth/register
+- headers: content-type application-json
+- Body-Raw
+
+```json
+{
+  "email": "testuser@example.com",
+  "displayName": "Test User",
+  "password": "Qwerty123"
+}
+```
+
+Then click "SEND" to get json response like this:
+
+```json
+{
+  "accessToken": "eyJh*********.*******",
+  "refreshToken": "eyJ*********.*******",
+  "user": {
+    "id": "d438****-****-****-****-************",
+    "email": "testuser@example.com",
+    "displayName": "Test User",
+    "createdAt": "2026-01-05T16:42:33.439Z"
+  }
+}
+```
