@@ -341,6 +341,7 @@ const envSchema = z.object({
   // JWT_EXPIRES_IN: z.string().default("30m")
   // JWT_REFRESH_SECRET: z.string().min(32),
   // JWT_REFRESH_EXPIRES_IN: z.string().default("30d"),
+  // INTERNAL_AUTH_TOKEN: z.string().min(32), // → de-comment this after  Internal Auth implementation
 });
 
 type EnvType = z.infer<typeof envSchema>;
@@ -406,6 +407,8 @@ Then you can add in a new file in `services/auth-service/.env` this parameters:
 ```
 NODE_ENV=development
 AUTH_SERVICE_PORT=4003
+
+INTERNAL_AUTH_TOKEN=some-very-secure-internal-auth-token
 ```
 
 to make all this compatible add this "script" attribute to `services/auth-service/package.json` :
@@ -1206,4 +1209,266 @@ Then click "SEND" to get json response like this:
     "createdAt": "2026-01-05T16:42:33.439Z"
   }
 }
+```
+
+---
+
+## Gateway Service
+
+Now open folder gateway-service and init.
+
+```sh
+cd services/gateway-service
+bun init -y
+```
+
+Add also in tsconfig.json this line after **compilerOptions** section:
+
+```json
+"references": [{ "path": "../../packages/common" }]
+```
+
+After this create src folder and add some packages
+
+```sh
+mkdir src
+bun add cors axios express helmet jsonwebtoken
+bun add -d @types/cors @types/axios @types/express @types/helmet @types/jsonwebtoken
+```
+
+Open then package.json (in the same folder) and add under dependencies:
+
+```json
+"@chatapp/common": "workspace:^"
+```
+
+Copy also the whole script part. VERY IMPORTANT.
+
+Now copy and paste into `src/` folder the same file app.ts and index.ts of `auth-service/src`.
+
+In `index.ts` remove this 2 lines:
+
+```ts
+import { closeDatabase, connectToDatabase } from "@/db/sequelize";
+import { initModels } from "@/models";
+
+//
+await connectToDatabase();
+await initModels();
+
+//
+closeDatabase();
+
+// change also message
+("Gateway service is running");
+```
+
+Then import also `utils/logger.ts` from auth-service, renaming name to:
+
+```ts
+name: "gateway-service",
+```
+
+Add also a new .env file in gateway-service root folder with this values.
+
+```
+NODE_ENV=development
+GATEWAY_PORT=4000
+
+AUTH_SERVICE_URL=http://localhost:4003
+
+INTERNAL_API_TOKEN=your_internal_api_token_here
+```
+
+Finally add also `/config/env.ts` from `auth-service`, removing these lines.
+
+```ts
+AUTH_SERVICE_PORT: z.coerce.number().int().min(0).max(65_535).default(4003),
+AUTH_DB_URL: z.string().min(1),
+JWT_SECRET: z.string().min(32),
+JWT_EXPIRES_IN: z.string().default("30m"),
+JWT_REFRESH_SECRET: z.string().min(32),
+JWT_REFRESH_EXPIRES_IN: z.string().default("30d"),
+```
+
+Adding instead these 2:
+
+```ts
+GATEWAY_PORT: z.coerce.number().int().min(0).max(65_535).default(4000),
+AUTH_SERVICE_URL: z.string().url(),
+INTERNAL_API_TOKEN: z.string().min(16),
+
+// and changing this
+serviceName: "gateway-service",
+```
+
+Change now in index.ts
+
+```ts
+const port = env.GATEWAY_PORT;
+```
+
+Copy and paste also `/middleware` folder.
+
+And copy also content from **app.ts** commenting for now the _routes_ part.
+
+You can test gateway-service by typing in terminal:
+
+```ts
+bun --cwd services\gateway-service dev
+```
+
+---
+
+## Implement internal Auth check
+
+For internal check system you must to add a token based auth class.
+
+Create now a new file in `common/src/http/internal-auth.ts`
+
+```ts
+import { HttpError } from "../errors/http-error";
+
+import type { RequestHandler } from "express";
+
+export interface InternalAuthOptions {
+  headerName?: string;
+  exemptPaths?: string[];
+}
+
+const DEFAULT_HEADER_NAME = "x-internal-token";
+
+export const createInternalAuthMiddleware = (
+  expectedToken: string,
+  options: InternalAuthOptions = {}
+): RequestHandler => {
+  const headerName = options.headerName?.toLowerCase() ?? DEFAULT_HEADER_NAME;
+  const exemptPaths = new Set(options.exemptPaths ?? []);
+
+  return (req, _res, next) => {
+    if (exemptPaths.has(req.path)) {
+      next();
+      return;
+    }
+
+    const provided = req.headers[headerName];
+    const token = Array.isArray(provided) ? provided[0] : provided;
+
+    if (typeof token !== "string" || token !== expectedToken) {
+      next(new HttpError(401, "Unauthorized"));
+      return;
+    }
+
+    next();
+  };
+};
+```
+
+> - **exemptPaths** is used to check if token is needed or not for url request
+> - **x-internal-token** is the header part to check token.
+> - **expectedToken** is used to compare the existing token (next only is authorized request)
+
+Then in `packages/common/src/index.ts` add the exportation for `internal-auth`
+
+```ts
+// [...]
+export * from "./http/internal-auth";
+// [...]
+```
+
+After this process add a new file in `services/gateway-service/src/validation/auth.schema.ts`:
+
+> Copy the same content form `services/auth-service/src/routes/auth.schema.ts`
+
+Then add new file `services/gateway-service/src/services/auth-proxy.service.ts`.
+
+Add now `gateway-service/src/controllers/auth.controller.ts`
+
+```ts
+import { authProxyService } from "@/services/auth-proxy.service";
+import { registerSchema } from "@/validation/auth.schema";
+import type { AsyncHandler } from "@chatapp/common";
+
+export const registerUser: AsyncHandler = async (req, res, next) => {
+  try {
+    const payload = registerSchema.parse(req);
+    const response = await authProxyService.register(payload.body);
+
+    res.status(201).json(response);
+  } catch (error) {
+    next(error);
+  }
+};
+```
+
+And new route in `services/gateway-service/src/routes/auth.routes.ts`:
+
+```ts
+import { registerUser } from "@/controllers/auth.controller";
+import { registerSchema } from "@//validation/auth.schema";
+import { asyncHandler, validationRequest } from "@chatapp/common";
+
+import { Router } from "express";
+
+export const authRouter: Router = Router();
+
+authRouter.post(
+  "/register",
+  validateRequest({ body: registerSchema }),
+  asyncHandler(registerUser)
+);
+```
+
+And an index in `services/gateway-service/src/routes/index.ts`:
+
+```ts
+import type { Router } from "express";
+
+import { authRouter } from "@/routes/auth.routes";
+
+export const registerRoutes = (app: Router) => {
+  app.use("/auth", authRouter);
+};
+```
+
+> De-Comment now the INTERNAL_AUTH_TOKEN part in `services/auth-service/src/config/env.ts`.
+
+Modify also `services/auth-service/src/app.ts` adding this line:
+
+```ts
+import { env } from "./config/env";
+
+// ...
+
+app.use(createInternalAuthMiddleware(env.INTERNAL_AUTH_TOKEN));
+```
+
+Open Docker Desktop, run compose to start mysql container
+
+```sh
+docker-compose up -d auth-db
+```
+
+And make connection in exec tab
+
+```sh
+mysql -u chatapp_auth_user -pchatapp_auth_password chatapp_auth_service
+```
+
+Run Token Generator in terminal
+
+```sh
+openssl rand -hex 32
+```
+
+COPY TOKEN (similar this one): 52f87b55df19233e572ed3e6f24c78af132d5dfe496c438e567ba0efe7e20b7f
+
+Then paste this token to `service/gateway-service/.env` as **INTERNAL_API_TOKEN** value.
+
+Paste the same token in `service/auth-service/.env` as **INTERNAL_API_TOKEN** value.
+
+Finally run services by typing in terminal
+
+```sh
+bun run dev
 ```
