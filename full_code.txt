@@ -1,0 +1,1844 @@
+→ ./docker-compose.yml
+```yaml
+services:
+  auth-db:
+    image: mysql:8.0
+    container_name: chatapp-auth.db
+    environment:
+      MYSQL_DATABASE: ${AUTH_DB_NAME:-chatapp_auth_service}
+      MYSQL_USER: ${AUTH_DB_USER:-chatapp_auth_user}
+      MYSQL_PASSWORD: ${AUTH_DB_PASSWORD:-chatapp_auth_password}
+      MYSQL_ROOT_PASSWORD: ${AUTH_DB_ROOT_PASSWORD:-root_password}
+    command: ["mysqld", "--default-authentication-plugin=mysql_native_password"]
+    ports:
+      - "${AUTH_DB_PORT:-3306}:3306"
+    volumes:
+      - auth-db-data:/var/lib/mysql
+    networks:
+      - chatapp-network
+
+volumes:
+  auth-db-data:
+
+networks:
+  chatapp-network:
+    driver: bridge
+
+```
+
+---
+→ ./index.ts
+```ts
+console.log("Hello via Bun!");
+```
+
+---
+→ ./package.json
+```json
+{
+  "name": "chatapp",
+  "workspaces": [
+    "services/*",
+    "packages/*"
+  ],
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "bun run --filter '*' --filter '!chatapp' build",
+    "dev": "bun run --filter '*' --filter '!chatapp' dev",
+    "lint": "bun run --filter '*' --filter '!chatapp' lint",
+    "format": "bun run --filter '*' --filter '!chatapp' format",
+    "test": "bun run --filter '*' --filter '!chatapp' test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/bun": "latest",
+    "@types/node": "^25.0.3",
+    "eslint": "^9.39.2",
+    "pino-pretty": "^13.1.3",
+    "prettier": "^3.7.4",
+    "tsx": "^4.21.0",
+    "typescript-eslint": "^8.51.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "pino": "^10.1.0",
+    "zod": "^4.3.4"
+  }
+}
+
+```
+
+---
+→ ./tsconfig.base.json
+```json
+{
+  "compilerOptions": {
+    // Environment setup & latest features
+    "lib": ["ESNext"],
+    "composite": true, // Mandatory for Project ref
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "allowJs": true,
+
+    // Bundler mode
+    "moduleResolution": "Node", // switch with "bundler", "Node" fit better with Bun
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    // Specify types for Bun and Node (mandatory)
+    "types": ["bun", "node"],
+
+    // Best practices
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    // Some stricter flags (disabled by default)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noPropertyAccessFromIndexSignature": false
+  }
+}
+
+```
+
+---
+→ ./tsconfig.json
+```json
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "composite": true },
+  "files": [],
+  "references": [
+    { "path": "./packages/common" },
+    // { "path": "./services/user-service" },
+    // { "path": "./services/gateway-service" },
+    // { "path": "./services/chat-service" },
+    { "path": "./services/auth-service" }
+  ]
+}
+
+```
+
+---
+→ ./packages/common/index.ts
+```ts
+console.log("Hello via Bun!");
+```
+
+---
+→ ./packages/common/package.json
+```json
+{
+  "name": "@chatapp/common",
+  "version": "1.0.0",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "main": "./src/index.js",
+  "types": "./dist/index.d.ts",
+  "noEmit": false,
+  "script": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "pino-pretty": "^13.1.3"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@types/express": "^5.0.6",
+    "express": "^5.2.1",
+    "pino": "^10.1.0",
+    "zod": "3"
+  }
+}
+
+```
+
+---
+→ ./packages/common/tsconfig.json
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+    "declaration": true,
+    "declarationMap": true,
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true
+  },
+  "include": ["src"]
+}
+
+```
+
+---
+→ ./packages/common/src/env.ts
+```ts
+import type { ZodObject, ZodRawShape } from "zod";
+import { z } from "zod";
+
+interface EnvOptions {
+  source?: NodeJS.ProcessEnv;
+  serviceName?: string;
+}
+
+type SchemaOutput<TSchema extends ZodRawShape> = z.output<ZodObject<TSchema>>;
+
+export const createEnv = <TSchema extends ZodRawShape>(
+  schema: ZodObject<TSchema>,
+  options: EnvOptions = {}
+): SchemaOutput<TSchema> => {
+  const { source = process.env, serviceName = "service" } = options;
+  const parsed = schema.safeParse(source);
+
+  if (!parsed.success) {
+    const formattedErrors = z.treeifyError(parsed.error);
+    throw new Error(
+      `[${serviceName}] Environment variable validation failed: ${JSON.stringify(formattedErrors)}`
+    );
+  }
+
+  return parsed.data;
+};
+
+export type EnvSchema<TShape extends ZodRawShape> = z.output<ZodObject<TShape>>;
+
+```
+
+---
+→ ./packages/common/src/index.ts
+```ts
+export * from "./env";
+export * from "./logger";
+export * from "./errors/http-error";
+export * from "./http/async-handler";
+export * from "./http/validate-request";
+export * from "./http/internal-auth";
+export * from "./events/event-types";
+export * from "./events/auth-event";
+export { z } from "zod";
+export type { Logger } from "pino";
+
+```
+
+---
+→ ./packages/common/src/logger.ts
+```ts
+import pino from "pino";
+
+import type { Logger, LoggerOptions } from "pino";
+
+type CreateLoggerOptions = LoggerOptions & {
+  name: string;
+};
+
+export const createLogger = (options: CreateLoggerOptions): Logger => {
+  const { name, ...rest } = options;
+  const transport =
+    process.env.NODE_ENV === "development"
+      ? {
+          target: "pino-pretty",
+          options: {
+            colorize: true,
+            translateTime: "SYS:standard",
+          },
+        }
+      : undefined;
+
+  return pino({
+    name,
+    level: process.env.LOG_LEVEL || "info",
+    transport,
+    ...rest,
+  });
+};
+
+```
+
+---
+→ ./packages/common/src/errors/http-error.ts
+```ts
+export class HttpError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    message: string,
+    public readonly details?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
+```
+
+---
+→ ./packages/common/src/events/auth-event.ts
+```ts
+import type { EventPayload, OutboundEvent } from "./event-types";
+
+export const AUTH_EVENT_EXCHANGE = "auth.events";
+export const AUTH_USER_REGISTERED_ROUTING_KEY = "auth.user.registered";
+
+export interface AuthUserRegisteredPayload extends EventPayload {
+  id: string;
+  email: string;
+  displayName: string;
+  createdAt: string;
+}
+
+export type AuthRegisteredEvent = OutboundEvent<
+  typeof AUTH_USER_REGISTERED_ROUTING_KEY,
+  AuthUserRegisteredPayload
+>;
+
+```
+
+---
+→ ./packages/common/src/events/event-types.ts
+```ts
+export type EventPayload = Record<string, unknown>;
+
+export interface DomainEvent<
+  TType extends string,
+  TPayload extends EventPayload,
+> {
+  type: TType;
+  payload: TPayload;
+  occurredAt: string;
+}
+
+export interface EventMetadata {
+  correlationId?: string;
+  causationId?: string;
+  version?: number;
+}
+
+export interface OutboundEvent<
+  TType extends string,
+  TPayload extends EventPayload,
+> extends DomainEvent<TType, TPayload> {
+  metadata?: EventMetadata;
+}
+
+export interface InBoundEvent<
+  TType extends string,
+  TPayload extends EventPayload,
+> extends DomainEvent<TType, TPayload> {
+  metadata: EventMetadata;
+}
+
+```
+
+---
+→ ./packages/common/src/http/async-handler.ts
+```ts
+import type { NextFunction, RequestHandler, Request, Response } from "express";
+
+export type AsyncHandler = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => Promise<unknown>;
+
+const toError = (error: unknown): Error => {
+  return error instanceof Error ? error : new Error(String(error));
+};
+
+const forwardError = (nextFn: ErrorForwarder, error: Error) => {
+  nextFn(toError(error));
+};
+
+type ErrorForwarder = (error: Error) => void;
+
+export const asyncHandler = (handler: AsyncHandler): RequestHandler => {
+  return (req, res, next) => {
+    void handler(req, res, next).catch((error) => {
+      forwardError(next as ErrorForwarder, error);
+    });
+  };
+};
+
+```
+
+---
+→ ./packages/common/src/http/internal-auth.ts
+```ts
+import { HttpError } from "../errors/http-error";
+
+import type { RequestHandler } from "express";
+
+export interface InternalAuthOptions {
+  headerName?: string;
+  exemptPaths?: string[];
+}
+
+const DEFAULT_HEADER_NAME = "x-internal-token";
+
+export const createInternalAuthMiddleware = (
+  expectedToken: string,
+  options: InternalAuthOptions = {}
+): RequestHandler => {
+  const headerName = options.headerName?.toLowerCase() ?? DEFAULT_HEADER_NAME;
+  const exemptPaths = new Set(options.exemptPaths ?? []);
+
+  return (req, _res, next) => {
+    if (options.exemptPaths?.some((p) => req.originalUrl.startsWith(p))) {
+      //if (exemptPaths.has(req.path)) {
+      next();
+      return;
+    }
+
+    const provided = req.headers[headerName];
+    const token = Array.isArray(provided) ? provided[0] : provided;
+
+    if (typeof token !== "string" || token !== expectedToken) {
+      next(new HttpError(401, "Unauthorized"));
+      return;
+    }
+
+    next();
+  };
+};
+
+```
+
+---
+→ ./packages/common/src/http/validate-request.ts
+```ts
+import { HttpError } from "../errors/http-error";
+import type { NextFunction, Request, Response } from "express";
+import { ZodError, type AnyZodObject, type ZodType } from "zod";
+
+type Schema = AnyZodObject | ZodType;
+type ParamsRecord = Record<string, string>;
+type QueryRecord = Record<string, unknown>;
+
+export interface RequestValidationSchemas {
+  body?: Schema;
+  params?: Schema;
+  query?: Schema;
+}
+
+const formattedError = (error: ZodError) =>
+  error.errors.map((issue) => ({
+    path: issue.path.join("."),
+    message: issue.message,
+  }));
+
+export const validateRequest = (schemas: RequestValidationSchemas) => {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    try {
+      if (schemas.body) {
+        const parseBody = schemas.body.parse(req.body) as unknown;
+        req.body = parseBody;
+      }
+
+      if (schemas.params) {
+        const parsedParams = schemas.params.parse(req.params) as ParamsRecord;
+        req.params = parsedParams as Request["params"];
+      }
+
+      if (schemas.query) {
+        const parsedQuery = schemas.query.parse(req.query) as QueryRecord;
+        req.query = parsedQuery as Request["query"];
+      }
+      next();
+    } catch (error) {
+      if (error instanceof ZodError) {
+        next(
+          new HttpError(422, "Validation Error", {
+            issues: formattedError(error),
+          })
+        );
+        return;
+      }
+      next(error);
+    }
+  };
+};
+
+```
+
+---
+→ ./services/auth-service/package.json
+```json
+{
+  "name": "@chatapp/auth-service",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "bun --watch src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint 'src/**/*.ts'",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "test": "echo 'No tests yet'",
+    "format": "prettier --check 'src/**/*.ts'"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.8",
+    "@types/bcrypt": "^6.0.0",
+    "@types/bun": "latest",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@chatapp/common": "workspace:^",
+    "amqplib": "^0.10.9",
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "mysql2": "^3.16.0",
+    "sequelize": "^6.37.7"
+  }
+}
+
+```
+
+---
+→ ./services/auth-service/tsconfig.json
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+    "declaration": true,
+    "declarationMap": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "composite": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src"],
+  "references": [{ "path": "../../packages/common" }]
+}
+
+```
+
+---
+→ ./services/auth-service/src/app.ts
+```ts
+import express, { type Application } from "express";
+import cors from "cors";
+import helmet from "helmet";
+import { errorHandler } from "@/middleware/error-handler";
+import { registerRoutes } from "@/routes";
+import { createInternalAuthMiddleware } from "@chatapp/common";
+import { env } from "./config/env";
+
+export const createApp = (): Application => {
+  const app = express();
+
+  app.use(helmet());
+  app.use(
+    cors({
+      origin: "*",
+      credentials: true,
+    })
+  );
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+  app.use(createInternalAuthMiddleware(env.INTERNAL_AUTH_TOKEN));
+
+  registerRoutes(app);
+
+  app.use((_req, res) => {
+    res.status(404).json({ message: "Not found" });
+  });
+
+  app.use(errorHandler);
+
+  return app;
+};
+
+```
+
+---
+→ ./services/auth-service/src/index.ts
+```ts
+import { createApp } from "@/app";
+import { createServer } from "http";
+import { env } from "@/config/env";
+import { logger } from "@/utils/logger";
+import { closeDatabase, connectToDatabase } from "@/db/sequelize";
+import { initModels } from "@/models";
+import { closePublisher, initPublisher } from "@/messaging/event-publishing";
+
+const main = async () => {
+  try {
+    await connectToDatabase();
+    await initModels();
+    await initPublisher();
+
+    const app = createApp();
+    const server = createServer(app);
+
+    const port = env.AUTH_SERVICE_PORT;
+
+    server.listen(port, () => {
+      logger.info({ port }, "Auth service is running");
+    });
+
+    const shutdown = () => {
+      logger.info("Shutting down auth service...");
+
+      Promise.all([closeDatabase(), closePublisher()])
+        .catch((error: unknown) => {
+          logger.error({ error }, "Error during shutdown tasks");
+        })
+        .finally(() => {
+          server.close(() => process.exit(0));
+        });
+    };
+
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  } catch (error) {
+    logger.error({ error }, "Failed to start auth service");
+    process.exit(1);
+  }
+};
+
+void main();
+
+```
+
+---
+→ ./services/auth-service/src/config/env.ts
+```ts
+import "dotenv/config";
+import { createEnv, z } from "@chatapp/common";
+
+const envSchema = z.object({
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
+  AUTH_SERVICE_PORT: z.coerce.number().int().min(0).max(65_535).default(4003),
+  AUTH_DB_URL: z.string().min(1),
+  JWT_SECRET: z.string().min(32),
+  JWT_EXPIRES_IN: z.string().default("30m"),
+  JWT_REFRESH_SECRET: z.string().min(32),
+  JWT_REFRESH_EXPIRES_IN: z.string().default("30d"),
+  RABBITMQ_URL: z.string().url(),
+  INTERNAL_AUTH_TOKEN: z.string().min(32),
+});
+
+type EnvType = z.infer<typeof envSchema>;
+
+export const env: EnvType = createEnv(envSchema, {
+  serviceName: "auth-service",
+});
+
+export type Env = typeof env;
+
+```
+
+---
+→ ./services/auth-service/src/controllers/auth.controller.ts
+```ts
+import { register } from "@/services/auth.service";
+import type { RegisterInput } from "@/types/auth";
+import { asyncHandler } from "@chatapp/common";
+import type { RequestHandler } from "express";
+
+export const registerHandler: RequestHandler = asyncHandler(
+  async (req, res) => {
+    const payload = req.body as RegisterInput;
+    const tokens = await register(payload);
+    res.status(201).json(tokens);
+  }
+);
+
+```
+
+---
+→ ./services/auth-service/src/db/sequelize.ts
+```ts
+import { Sequelize } from "sequelize";
+import { env } from "@/config/env";
+import { logger } from "@/utils/logger";
+
+export const sequelize = new Sequelize(env.AUTH_DB_URL, {
+  dialect: "mysql",
+  logging:
+    env.NODE_ENV == "development"
+      ? (msg: unknown) => {
+          logger.debug({ sequelize: msg });
+        }
+      : false,
+  define: { underscored: true, freezeTableName: true },
+});
+
+export const connectToDatabase = async () => {
+  await sequelize.authenticate();
+  logger.info("Auth database connection established successfully.");
+};
+
+export const closeDatabase = async () => {
+  await sequelize.close();
+  logger.info("Auth database connection closed.");
+};
+
+```
+
+---
+→ ./services/auth-service/src/messaging/event-publishing.ts
+```ts
+import {
+  AUTH_EVENT_EXCHANGE,
+  AUTH_USER_REGISTERED_ROUTING_KEY,
+  type AuthUserRegisteredPayload,
+} from "@chatapp/common";
+import { connect, type Channel, type ChannelModel } from "amqplib";
+
+import { env } from "@/config/env";
+import { logger } from "@/utils/logger";
+
+let connectionRef: ChannelModel | null = null;
+
+let channel: Channel | null = null;
+
+export const initPublisher = async () => {
+  if (!env.RABBITMQ_URL) {
+    logger.warn(
+      "RABBITMQ_URL is not defined. Skipping RabbitMQ initialization."
+    );
+    return;
+  }
+
+  if (channel) {
+    return;
+  }
+
+  const connection = await connect(env.RABBITMQ_URL);
+  connectionRef = connection;
+  channel = await connection.createChannel();
+  await channel.assertExchange(AUTH_EVENT_EXCHANGE, "topic", { durable: true });
+
+  connection.on("close", () => {
+    logger.warn("RabbitMQ connection closed");
+    channel = null;
+    connectionRef = null;
+  });
+  connection.on("error", (err) => {
+    logger.error({ err }, "RabbitMQ connection error");
+  });
+
+  logger.info("Auth service RabbitMQ publisher initialized");
+};
+
+export const publishUserRegistered = (payload: AuthUserRegisteredPayload) => {
+  if (!channel) {
+    logger.warn("RabbitMQ channel is not initialized. Cannot publish message.");
+    return;
+  }
+
+  const event = {
+    type: AUTH_USER_REGISTERED_ROUTING_KEY,
+    payload,
+    occurredAt: new Date().toISOString(),
+    metadata: { version: 1 },
+  };
+
+  const published = channel.publish(
+    AUTH_EVENT_EXCHANGE,
+    AUTH_USER_REGISTERED_ROUTING_KEY,
+    Buffer.from(JSON.stringify(event)),
+    { contentType: "application/json", persistent: true }
+  );
+
+  if (!published) {
+    logger.warn({ event }, "Failed to publish user registered event");
+  }
+};
+
+export const closePublisher = async () => {
+  try {
+    const ch = channel;
+    if (ch) {
+      await ch.close();
+      channel = null;
+    }
+    const conn = connectionRef;
+    if (conn) {
+      await conn.close();
+      connectionRef = null;
+    }
+  } catch (error) {
+    logger.error({ err: error }, "Error closing RabbitMQ connection/channel");
+  }
+};
+
+```
+
+---
+→ ./services/auth-service/src/middleware/error-handler.ts
+```ts
+import { HttpError } from "@chatapp/common";
+
+import type { ErrorRequestHandler } from "express";
+import { logger } from "@/utils/logger";
+
+export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
+  logger.error({ err, req }, "Unhandled error occurred");
+
+  const error = err instanceof HttpError ? err : undefined;
+  const statusCode = error?.statusCode ?? 500;
+  const message =
+    statusCode >= 500
+      ? "Internal Server Error"
+      : (error?.message ?? "Unknown Error");
+  const payload = error?.details
+    ? { message, details: error.details }
+    : { message };
+
+  res.status(statusCode).json(payload);
+
+  void _next();
+};
+
+```
+
+---
+→ ./services/auth-service/src/models/index.ts
+```ts
+import { sequelize } from "@/db/sequelize";
+import { UserCredentials } from "@/models/user-credentials.model";
+import { RefreshToken } from "@/models/refresh-token.model";
+
+export const initModels = async () => {
+  await sequelize.sync();
+};
+
+export { UserCredentials, RefreshToken };
+
+```
+
+---
+→ ./services/auth-service/src/models/refresh-token.model.ts
+```ts
+import { DataTypes, Model, type Optional } from "sequelize";
+import { sequelize } from "@/db/sequelize";
+import { UserCredentials } from "@/models/user-credentials.model";
+
+export interface RefreshTokenAttributes {
+  id: string;
+  userId: string;
+  tokenId: string;
+  expiresAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type RefreshTokenCreationAttributes = Optional<
+  RefreshTokenAttributes,
+  "id" | "createdAt" | "updatedAt"
+>;
+
+export class RefreshToken
+  extends Model<RefreshTokenAttributes, RefreshTokenCreationAttributes>
+  implements RefreshTokenAttributes
+{
+  declare id: string;
+  declare userId: string;
+  declare tokenId: string;
+  declare expiresAt: Date;
+  declare createdAt: Date;
+  declare updatedAt: Date;
+}
+
+RefreshToken.init(
+  {
+    id: {
+      type: DataTypes.UUID,
+      primaryKey: true,
+      defaultValue: DataTypes.UUIDV4,
+    },
+    userId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+    },
+    tokenId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+    },
+    expiresAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+    },
+    createdAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW,
+    },
+    updatedAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW,
+    },
+  },
+  {
+    sequelize,
+    tableName: "refresh_tokens",
+  }
+);
+
+UserCredentials.hasMany(RefreshToken, {
+  foreignKey: "userId",
+  as: "refreshTokens",
+  onDelete: "CASCADE",
+});
+
+RefreshToken.belongsTo(UserCredentials, {
+  foreignKey: "userId",
+  as: "user",
+});
+
+```
+
+---
+→ ./services/auth-service/src/models/user-credentials.model.ts
+```ts
+import { DataTypes, Model, type Optional } from "sequelize";
+import { sequelize } from "@/db/sequelize";
+
+export interface UserCredentialsAttributes {
+  id: string;
+  email: string;
+  displayName: string;
+  passwordHash: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type UserCredentialsCreationAttributes = Optional<
+  UserCredentialsAttributes,
+  "id" | "createdAt" | "updatedAt"
+>;
+
+export class UserCredentials
+  extends Model<UserCredentialsAttributes, UserCredentialsCreationAttributes>
+  implements UserCredentialsAttributes
+{
+  declare id: string;
+  declare email: string;
+  declare displayName: string;
+  declare passwordHash: string;
+  declare createdAt: Date;
+  declare updatedAt: Date;
+}
+
+UserCredentials.init(
+  {
+    id: {
+      type: DataTypes.UUID,
+      primaryKey: true,
+      defaultValue: DataTypes.UUIDV4,
+    },
+    email: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      unique: true,
+      validate: {
+        isEmail: true,
+      },
+    },
+    passwordHash: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    displayName: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    createdAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW,
+    },
+    updatedAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW,
+    },
+  },
+  {
+    sequelize,
+    tableName: "user_credentials",
+  }
+);
+
+```
+
+---
+→ ./services/auth-service/src/routes/auth.routes.ts
+```ts
+import { Router } from "express";
+import { validateRequest } from "@chatapp/common";
+import { registerHandler } from "@/controllers/auth.controller";
+import { registerSchema } from "@/routes/auth.schema";
+
+export const authRouter: Router = Router();
+
+authRouter.post(
+  "/register",
+  validateRequest({ body: registerSchema.shape.body }),
+  registerHandler
+);
+
+```
+
+---
+→ ./services/auth-service/src/routes/auth.schema.ts
+```ts
+import { z } from "@chatapp/common";
+
+export const registerSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    password: z.string().min(8),
+    displayName: z.string().min(3).max(30),
+  }),
+});
+
+export const loginSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    password: z.string().min(8),
+  }),
+});
+
+export const refreshSchema = z.object({
+  body: z.object({
+    refreshToken: z.string(),
+  }),
+});
+
+export const revokeSchema = z.object({
+  body: z.object({
+    userId: z.string().uuid(),
+  }),
+});
+
+```
+
+---
+→ ./services/auth-service/src/routes/index.ts
+```ts
+import { authRouter } from "@/routes/auth.routes";
+import type { Router } from "express";
+
+export const registerRoutes = (app: Router) => {
+  app.use("/auth", authRouter);
+};
+
+```
+
+---
+→ ./services/auth-service/src/services/auth.service.ts
+```ts
+import { sequelize } from "@/db/sequelize";
+import { RefreshToken, UserCredentials } from "@/models";
+import type { AuthResponse, RegisterInput } from "@/types/auth";
+import { hashPassword, signAccessToken, signRefreshToken } from "@/utils/token";
+import { HttpError } from "@chatapp/common";
+import { Op, Transaction } from "sequelize";
+import crypto from "crypto";
+import { publishUserRegistered } from "@/messaging/event-publishing";
+
+const REFRESH_TOKEN_TL_DAYS = 30;
+
+export const register = async (input: RegisterInput): Promise<AuthResponse> => {
+  const existing = await UserCredentials.findOne({
+    where: { email: { [Op.eq]: input.email } },
+  });
+
+  if (existing) {
+    throw new HttpError(400, "User with this email already exists");
+  }
+
+  const transaction = await sequelize.transaction();
+
+  try {
+    const passwordHash = await hashPassword(input.password);
+    const user = await UserCredentials.create(
+      {
+        email: input.email,
+        displayName: input.displayName,
+        passwordHash,
+      },
+      { transaction }
+    );
+
+    const refreshTokenRecord = await createRefreshToken(user.id, transaction);
+    await transaction.commit();
+
+    const accessToken = signAccessToken({ sub: user.id, email: user.email });
+    const refreshToken = signRefreshToken({
+      sub: user.id,
+      tokenId: refreshTokenRecord.tokenId,
+    });
+
+    const userData = {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      createdAt: user.createdAt.toISOString(),
+    };
+
+    publishUserRegistered(userData);
+
+    return { accessToken, refreshToken, user: userData };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+};
+
+const createRefreshToken = async (
+  userId: string,
+  transaction?: Transaction
+) => {
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + REFRESH_TOKEN_TL_DAYS);
+
+  const tokenId = crypto.randomUUID();
+
+  const record = await RefreshToken.create(
+    {
+      userId,
+      tokenId,
+
+      expiresAt,
+    },
+    { transaction }
+  );
+  return record;
+};
+
+```
+
+---
+→ ./services/auth-service/src/types/auth.ts
+```ts
+export interface RegisterInput {
+  email: string;
+  password: string;
+  displayName: string;
+}
+
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+export interface UserData {
+  id: string;
+  email: string;
+  displayName: string;
+  createdAt: string;
+}
+
+export interface AuthToken {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface AuthResponse extends AuthToken {
+  user: UserData;
+}
+
+```
+
+---
+→ ./services/auth-service/src/utils/logger.ts
+```ts
+import { createLogger } from "@chatapp/common";
+import type { Logger } from "@chatapp/common";
+
+export const logger: Logger = createLogger({
+  name: "auth-service",
+});
+
+```
+
+---
+→ ./services/auth-service/src/utils/token.ts
+```ts
+import bcrypt from "bcrypt";
+import jwt, { type Secret, type SignOptions } from "jsonwebtoken";
+import { env } from "@/config/env";
+
+const ACCESS_TOKEN: Secret = env.JWT_SECRET;
+const REFRESH_TOKEN: Secret = env.JWT_REFRESH_SECRET;
+const ACCESS_OPTIONS: SignOptions = {
+  expiresIn: env.JWT_EXPIRES_IN as SignOptions["expiresIn"],
+};
+const REFRESH_OPTIONS: SignOptions = {
+  expiresIn: env.JWT_REFRESH_EXPIRES_IN as SignOptions["expiresIn"],
+};
+
+export const hashPassword = async (password: string): Promise<string> => {
+  const saltRounds = 12;
+  return bcrypt.hash(password, saltRounds);
+};
+
+export const verifyPassword = async (
+  password: string,
+  hash: string
+): Promise<boolean> => {
+  return bcrypt.compare(password, hash);
+};
+
+export interface AccessTokenPayload {
+  sub: string; // userId
+  email: string;
+}
+
+export interface RefreshTokenPayload {
+  sub: string; // userId
+  tokenId: string;
+}
+
+export const signAccessToken = (payload: AccessTokenPayload): string => {
+  return jwt.sign(payload, ACCESS_TOKEN, ACCESS_OPTIONS);
+};
+
+export const signRefreshToken = (payload: RefreshTokenPayload): string => {
+  return jwt.sign(payload, REFRESH_TOKEN, REFRESH_OPTIONS);
+};
+
+export const verifyRefreshToken = (payload: string): RefreshTokenPayload => {
+  return jwt.verify(payload, REFRESH_TOKEN) as RefreshTokenPayload;
+};
+
+```
+
+---
+→ ./services/gateway-service/index.ts
+```ts
+console.log("Hello via Bun!");
+```
+
+---
+→ ./services/gateway-service/package.json
+```json
+{
+  "name": "gateway-service",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "bun --watch src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint 'src/**/*.ts'",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "test": "echo 'No tests yet'",
+    "format": "prettier --check 'src/**/*.ts'"
+  },
+  "devDependencies": {
+    "@types/axios": "^0.14.4",
+    "@types/bun": "latest",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/helmet": "^4.0.0",
+    "@types/jsonwebtoken": "^9.0.10"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@chatapp/common": "workspace:^",
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3"
+  }
+}
+
+```
+
+---
+→ ./services/gateway-service/tsconfig.json
+```json
+{
+  "compilerOptions": {
+    // Environment setup & latest features
+    "lib": ["ESNext"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "allowJs": true,
+
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "composite": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@chatapp/common": ["../common/src/index.ts"]
+    },
+
+    // Bundler mode
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": false,
+
+    // Best practices
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    // Some stricter flags (disabled by default)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noPropertyAccessFromIndexSignature": false
+  },
+  "references": [{ "path": "../../packages/common" }]
+}
+
+```
+
+---
+→ ./services/gateway-service/src/app.ts
+```ts
+import express, { type Application } from "express";
+import cors from "cors";
+import helmet from "helmet";
+import { errorHandler } from "./middleware/error-handler";
+import { registerRoutes } from "@/routes";
+
+export const createApp = (): Application => {
+  const app = express();
+
+  app.use(helmet());
+  app.use(
+    cors({
+      origin: "*",
+      credentials: true,
+    }),
+  );
+
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+
+  registerRoutes(app);
+
+  app.use((_req, res) => {
+    res.status(404).json({ message: "Not found" });
+  });
+
+  app.use(errorHandler);
+
+  return app;
+};
+
+```
+
+---
+→ ./services/gateway-service/src/index.ts
+```ts
+import { createApp } from "./app";
+import { createServer } from "http";
+import { env } from "./config/env";
+import { logger } from "./utils/logger";
+
+const main = async () => {
+  try {
+    const app = createApp();
+    const server = createServer(app);
+
+    const port = env.GATEWAY_PORT;
+
+    server.listen(port, () => {
+      logger.info({ port }, "Gateway service is running");
+    });
+
+    const shutdown = () => {
+      logger.info("Shutting down auth service...");
+
+      Promise.all([])
+        .catch((error: unknown) => {
+          logger.error({ error }, "Error during shutdown tasks");
+        })
+        .finally(() => {
+          server.close(() => process.exit(0));
+        });
+    };
+
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  } catch (error) {
+    logger.error({ error }, "Failed to start auth service");
+    process.exit(1);
+  }
+};
+
+void main();
+
+```
+
+---
+→ ./services/gateway-service/src/config/env.ts
+```ts
+import "dotenv/config";
+import { createEnv, z } from "@chatapp/common";
+
+const envSchema = z.object({
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
+  GATEWAY_PORT: z.coerce.number().int().min(0).max(65_535).default(4000),
+  AUTH_SERVICE_URL: z.string().url(),
+  INTERNAL_API_TOKEN: z.string().min(16),
+});
+
+type EnvType = z.infer<typeof envSchema>;
+
+export const env: EnvType = createEnv(envSchema, {
+  serviceName: "gateway-service",
+});
+
+export type Env = typeof env;
+
+```
+
+---
+→ ./services/gateway-service/src/controllers/auth.controller.ts
+```ts
+import { authProxyService } from "@/services/auth-proxy.service";
+import { registerSchema } from "@/validation/auth.schema";
+import type { AsyncHandler } from "@chatapp/common";
+
+export const registerUser: AsyncHandler = async (req, res, next) => {
+  try {
+    const payload = registerSchema.parse(req);
+    const response = await authProxyService.register(payload.body);
+
+    res.status(201).json(response);
+  } catch (error) {
+    next(error);
+  }
+};
+
+```
+
+---
+→ ./services/gateway-service/src/middleware/error-handler.ts
+```ts
+import { HttpError } from "@chatapp/common";
+
+import type { ErrorRequestHandler } from "express";
+import { logger } from "@/utils/logger";
+
+export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
+  logger.error({ err, req }, "Unhandled error occurred");
+
+  const error = err instanceof HttpError ? err : undefined;
+  const statusCode = error?.statusCode ?? 500;
+  const message =
+    statusCode >= 500
+      ? "Internal Server Error"
+      : (error?.message ?? "Unknown Error");
+  const payload = error?.details
+    ? { message, details: error.details }
+    : { message };
+
+  res.status(statusCode).json(payload);
+
+  void _next();
+};
+
+```
+
+---
+→ ./services/gateway-service/src/routes/auth.routes.ts
+```ts
+import { registerUser } from "@/controllers/auth.controller";
+import { registerSchema } from "@/validation/auth.schema";
+import { asyncHandler, validateRequest } from "@chatapp/common";
+
+import { Router } from "express";
+
+export const authRouter: Router = Router();
+
+authRouter.post(
+  "/register",
+  validateRequest({ body: registerSchema.shape.body }),
+  asyncHandler(registerUser)
+);
+
+```
+
+---
+→ ./services/gateway-service/src/routes/index.ts
+```ts
+import type { Router } from "express";
+
+import { authRouter } from "@/routes/auth.routes";
+
+export const registerRoutes = (app: Router) => {
+  app.use("/auth", authRouter);
+};
+
+```
+
+---
+→ ./services/gateway-service/src/services/auth-proxy.service.ts
+```ts
+import { HttpError } from "@chatapp/common";
+import axios from "axios";
+
+import { env } from "../config/env";
+
+const client = axios.create({
+  baseURL: env.AUTH_SERVICE_URL,
+  timeout: 5000,
+});
+
+const authHeader = {
+  headers: {
+    "X-Internal-Token": env.INTERNAL_API_TOKEN,
+  },
+} as const;
+
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface UserData {
+  id: string;
+  email: string;
+  displayName: string;
+  createdAt: string;
+}
+
+export interface AuthResponse extends AuthTokens {
+  user: UserData;
+}
+
+export interface RegisterPayload {
+  email: string;
+  password: string;
+  displayName: string;
+}
+
+export interface LoginPayload {
+  email: string;
+  password: string;
+}
+
+export interface RefreshPayload {
+  refreshToken: string;
+}
+export interface RevokePayload {
+  userId: string;
+}
+
+const resolvedMessage = (status: number, data: unknown): string => {
+  if (typeof data === "object" && data && "message" in data) {
+    const message = (data as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim().length > 0) {
+      return message;
+    }
+  }
+
+  return status >= 500
+    ? "Authentication service is unavailable"
+    : "An error occurred while processing the request";
+};
+
+const handleAxiosError = (error: unknown): never => {
+  if (!axios.isAxiosError(error) || !error.response) {
+    throw new HttpError(500, "Authentication service is unavailable");
+  }
+
+  const { status, data } = error.response as { status: number; data: unknown };
+
+  throw new HttpError(status, resolvedMessage(status, data));
+};
+
+export const authProxyService = {
+  async register(payload: RegisterPayload): Promise<AuthResponse> {
+    try {
+      const response = await client.post<AuthResponse>(
+        "/auth/register",
+        payload,
+        authHeader
+      );
+      return response.data;
+    } catch (error) {
+      return handleAxiosError(error);
+    }
+  },
+};
+
+```
+
+---
+→ ./services/gateway-service/src/utils/logger.ts
+```ts
+import { createLogger } from "@chatapp/common";
+import type { Logger } from "@chatapp/common";
+
+export const logger: Logger = createLogger({
+  name: "gateway-service",
+});
+
+```
+
+---
+→ ./services/gateway-service/src/validation/auth.schema.ts
+```ts
+import { z } from "@chatapp/common";
+
+export const registerSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    password: z.string().min(8),
+    displayName: z.string().min(3).max(30),
+  }),
+});
+
+export const loginSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    password: z.string().min(8),
+  }),
+});
+
+export const refreshSchema = z.object({
+  body: z.object({
+    refreshToken: z.string(),
+  }),
+});
+
+export const revokeSchema = z.object({
+  body: z.object({
+    userId: z.string().uuid(),
+  }),
+});
+
+```
+
+---
+→ ./services/user-service/index.ts
+```ts
+console.log("Hello via Bun!");
+```
+
+---
+→ ./services/user-service/package.json
+```json
+{
+  "name": "@chatapp/user-service",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "bun --watch src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint 'src/**/*.ts'",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "test": "echo 'No tests yet'",
+    "format": "prettier --check 'src/**/*.ts'"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/helmet": "^4.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@chatapp/common": "workspace:^",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0"
+  }
+}
+
+```
+
+---
+→ ./services/user-service/tsconfig.json
+```json
+{
+  "compilerOptions": {
+    // Environment setup & latest features
+    "lib": ["ESNext"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "allowJs": true,
+
+    // Bundler mode
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    // Best practices
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    // Some stricter flags (disabled by default)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noPropertyAccessFromIndexSignature": false
+  }
+}
+
+```
+
+---
+→ ./services/user-service/src/app.ts
+```ts
+import express, { type Application } from "express";
+import cors from "cors";
+import helmet from "helmet";
+import { errorHandler } from "./middleware/error-handler";
+
+export const createApp = (): Application => {
+  const app = express();
+
+  app.use(helmet());
+  app.use(
+    cors({
+      origin: "*",
+      credentials: true,
+    }),
+  );
+
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+
+  app.use((_req, res) => {
+    res.status(404).json({ message: "Not found" });
+  });
+
+  app.use(errorHandler);
+
+  return app;
+};
+
+```
+
+---
+→ ./services/user-service/src/config/env.ts
+```ts
+import "dotenv/config";
+import { createEnv, z } from "@chatapp/common";
+
+const envSchema = z.object({
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
+  GATEWAY_PORT: z.coerce.number().int().min(0).max(65_535).default(4000),
+  AUTH_SERVICE_URL: z.string().url(),
+  INTERNAL_API_TOKEN: z.string().min(16),
+});
+
+type EnvType = z.infer<typeof envSchema>;
+
+export const env: EnvType = createEnv(envSchema, {
+  serviceName: "gateway-service",
+});
+
+export type Env = typeof env;
+
+```
+
+---
+→ ./services/user-service/src/middleware/error-handler.ts
+```ts
+import { HttpError } from "@chatapp/common";
+/**Module '"@chatapp/common"' has no exported member 'HttpError'. */
+
+import type { ErrorRequestHandler } from "express";
+import { logger } from "@/utils/logger";
+/**Cannot find module '@/utils/logger' or its corresponding type declarations. */
+
+export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
+  logger.error({ err, req }, "Unhandled error occurred");
+
+  const error = err instanceof HttpError ? err : undefined;
+  const statusCode = error?.statusCode ?? 500;
+  const message =
+    statusCode >= 500
+      ? "Internal Server Error"
+      : (error?.message ?? "Unknown Error");
+  const payload = error?.details
+    ? { message, details: error.details }
+    : { message };
+
+  res.status(statusCode).json(payload);
+
+  void _next();
+};
+
+```
+
+---
+→ ./services/user-service/src/utils/logger.ts
+```ts
+import { createLogger } from "@chatapp/common";
+import type { Logger } from "@chatapp/common";
+
+export const logger: Logger = createLogger({
+  name: "user-service",
+});
+
+```
+
+---

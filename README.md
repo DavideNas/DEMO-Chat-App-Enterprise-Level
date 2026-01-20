@@ -186,7 +186,7 @@ type SchemaOutput<TSchema extends ZodRawShape> = z.output<ZodObject<TSchema>>;
 
 export const createEnv = <TSchema extends ZodRawShape>(
   schema: ZodObject<TSchema>,
-  options: EnvOptions = {}
+  options: EnvOptions = {},
 ): SchemaOutput<TSchema> => {
   const { source = process.env, serviceName = "service" } = options;
   const parsed = schema.safeParse(source);
@@ -194,7 +194,7 @@ export const createEnv = <TSchema extends ZodRawShape>(
   if (!parsed.success) {
     const formattedErrors = z.treeifyError(parsed.error);
     throw new Error(
-      `[${serviceName}] Environment variable validation failed: ${JSON.stringify(formattedErrors)}`
+      `[${serviceName}] Environment variable validation failed: ${JSON.stringify(formattedErrors)}`,
     );
   }
 
@@ -308,7 +308,7 @@ export const createApp = (): Application => {
     cors({
       origin: "*",
       credentials: true,
-    })
+    }),
   );
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
@@ -438,7 +438,7 @@ export class HttpError extends Error {
   constructor(
     public readonly statusCode: number,
     message: string,
-    public readonly details?: Record<string, unknown>
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "HttpError";
@@ -543,7 +543,7 @@ export const validateRequest = (schemas: RequestValidationSchemas) => {
         next(
           new HttpError(422, "Validation Error", {
             issues: formattedError(error),
-          })
+          }),
         );
         return;
       }
@@ -721,7 +721,7 @@ UserCredentials.init(
   {
     sequelize,
     tableName: "user_credentials",
-  }
+  },
 );
 ```
 
@@ -819,7 +819,7 @@ RefreshToken.init(
   {
     sequelize,
     tableName: "refresh_tokens",
-  }
+  },
 );
 
 UserCredentials.hasMany(RefreshToken, {
@@ -914,7 +914,7 @@ export const hashPassword = async (password: string): Promise<string> => {
 
 export const verifyPassword = async (
   password: string,
-  hash: string
+  hash: string,
 ): Promise<boolean> => {
   return bcrypt.compare(password, hash);
 };
@@ -974,7 +974,7 @@ export const register = async (input: RegisterInput): Promise<AuthResponse> => {
         displayName: input.displayName,
         passwordHash,
       },
-      { transaction }
+      { transaction },
     );
 
     const refreshTokenRecord = await createRefreshToken(user.id, transaction);
@@ -1004,7 +1004,7 @@ export const register = async (input: RegisterInput): Promise<AuthResponse> => {
 
 const createRefreshToken = async (
   userId: string,
-  transaction?: Transaction
+  transaction?: Transaction,
 ) => {
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + REFRESH_TOKEN_TL_DAYS);
@@ -1018,7 +1018,7 @@ const createRefreshToken = async (
 
       expiresAt,
     },
-    { transaction }
+    { transaction },
   );
   return record;
 };
@@ -1035,7 +1035,7 @@ import type { NextFunction, RequestHandler, Request, Response } from "express";
 export type AsyncHandler = (
   req: Request,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ) => Promise<unknown>;
 
 const toError = (error: unknown): Error => {
@@ -1100,7 +1100,7 @@ authRouter.post(
   validateRequest({
     /* body: registerSchema.shape.body */
   }),
-  registerHandler
+  registerHandler,
 );
 // de-comment body part only after adding auth.schema file
 ```
@@ -1340,7 +1340,7 @@ const DEFAULT_HEADER_NAME = "x-internal-token";
 
 export const createInternalAuthMiddleware = (
   expectedToken: string,
-  options: InternalAuthOptions = {}
+  options: InternalAuthOptions = {},
 ): RequestHandler => {
   const headerName = options.headerName?.toLowerCase() ?? DEFAULT_HEADER_NAME;
   const exemptPaths = new Set(options.exemptPaths ?? []);
@@ -1415,7 +1415,7 @@ export const authRouter: Router = Router();
 authRouter.post(
   "/register",
   validateRequest({ body: registerSchema }),
-  asyncHandler(registerUser)
+  asyncHandler(registerUser),
 );
 ```
 
@@ -1472,3 +1472,370 @@ Finally run services by typing in terminal
 ```sh
 bun run dev
 ```
+
+Test with POSTMAN the endpoint:
+
+- POST http://localhost:4000/auth/register
+- Headers = content-type : application/json
+- Body = { "email": "testuser@example.com", "displayName": "Test User", "password": "Qwerty123" }
+
+> If not working try to remove previous docker container with `docker-compose down -v`
+
+---
+
+## Implementing RabbitMQ
+
+To create a container for broker message add to `docker-compose.yml` file new service:
+
+```yml
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: chatapp-rabbitmq
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    networks:
+      - chatapp-network
+
+auth-db:
+  # ...
+```
+
+Then restart docker compose to see new container for RabbitMQ
+
+```sh
+docker-compose up -d
+```
+
+Open link from docker , insert user and password (guest:guest)
+
+Now to connect broker message a new class is needed for manage events.
+
+Create new one in `packages/common/src/events/event-types.ts`:
+
+```ts
+export type EventPayload = Record<string, unknown>;
+
+export interface DomainEvent<
+  TType extends string,
+  TPayload extends EventPayload,
+> {
+  type: TType;
+  payload: TPayload;
+  occurredAt: string;
+}
+
+export interface EventMetadata {
+  correlationId?: string;
+  causationId?: string;
+  version?: number;
+}
+
+export interface OutboundEvent<
+  TType extends string,
+  TPayload extends EventPayload,
+> extends DomainEvent<TType, TPayload> {
+  metadata?: EventMetadata;
+}
+
+export interface InBoundEvent<
+  TType extends string,
+  TPayload extends EventPayload,
+> extends DomainEvent<TType, TPayload> {
+  metadata: EventMetadata;
+}
+```
+
+Now create new file for the auth-services event in `packages/common/src/events/auth-event.ts`:
+
+```ts
+import type { EventPayload, OutboundEvent } from "./event-types";
+
+export const AUTH_EVENT_EXCHANGE = "auth.events";
+export const AUTH_USER_REGISTERED_ROUTING_KEY = "auth.user.registered";
+
+export interface AuthUserRegisteredPayload extends EventPayload {
+  id: string;
+  email: string;
+  displayName: string;
+  createdAt: string;
+}
+
+export type AuthRegisteredEvent = OutboundEvent<
+  typeof AUTH_USER_REGISTERED_ROUTING_KEY,
+  AuthUserRegisteredPayload
+>;
+```
+
+Export finally in `packages/common/src/index.ts` adding these 2 lines:
+
+```ts
+export * from "./events/event-types";
+export * from "./events/auth-event";
+```
+
+To complete setup install amqp packages to auth-service:
+
+```sh
+cd services/auth-service
+bun add amqplib
+bun add -d @types/amqplib
+```
+
+and in `services/auth-service/.env` add new value for RabbitMQ:
+
+```
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+```
+
+adding also to envSchema in `services/auth-service/src/config/env.ts`
+
+```ts
+const envSchema = z.object({
+  // ...
+  RABBITMQ_URL: z.string().url(),
+});
+```
+
+Add now a file to manage emit of events in `services/auth-service/src/messaging/event-publishing.ts`:
+
+```ts
+import {
+  AUTH_EVENT_EXCHANGE,
+  AUTH_USER_REGISTERED_ROUTING_KEY,
+  type AuthUserRegisteredPayload,
+} from "@chatapp/common";
+import { connect, type Channel, type ChannelModel } from "amqplib";
+
+import { env } from "@/config/env";
+import { logger } from "@/utils/logger";
+
+let connectionRef: ChannelModel | null = null;
+
+let channel: Channel | null = null;
+
+export const initPublisher = async () => {
+  if (!env.RABBITMQ_URL) {
+    logger.warn(
+      "RABBITMQ_URL is not defined. Skipping RabbitMQ initialization.",
+    );
+    return;
+  }
+
+  if (channel) {
+    return;
+  }
+
+  const connection = await connect(env.RABBITMQ_URL);
+  connectionRef = connection;
+  channel = await connection.createChannel();
+  await channel.assertExchange(AUTH_EVENT_EXCHANGE, "topic", { durable: true });
+
+  connection.on("close", () => {
+    logger.warn("RabbitMQ connection closed");
+    channel = null;
+    connectionRef = null;
+  });
+  connection.on("error", (err) => {
+    logger.error({ err }, "RabbitMQ connection error");
+  });
+
+  logger.info("Auth service RabbitMQ publisher initialized");
+};
+
+export const publishUserRegistered = (payload: AuthUserRegisteredPayload) => {
+  if (!channel) {
+    logger.warn("RabbitMQ channel is not initialized. Cannot publish message.");
+    return;
+  }
+
+  const event = {
+    type: AUTH_USER_REGISTERED_ROUTING_KEY,
+    payload,
+    occurredAt: new Date().toISOString(),
+    metadata: { version: 1 },
+  };
+
+  const published = channel.publish(
+    AUTH_EVENT_EXCHANGE,
+    AUTH_USER_REGISTERED_ROUTING_KEY,
+    Buffer.from(JSON.stringify(event)),
+    { contentType: "application/json", persistent: true },
+  );
+
+  if (!published) {
+    logger.warn({ event }, "Failed to publish user registered event");
+  }
+};
+
+export const closePublisher = async () => {
+  try {
+    const ch = channel;
+    if (ch) {
+      await ch.close();
+      channel = null;
+    }
+    const conn = connectionRef;
+    if (conn) {
+      await conn.close();
+      connectionRef = null;
+    }
+  } catch (error) {
+    logger.error({ err: error }, "Error closing RabbitMQ connection/channel");
+  }
+};
+```
+
+After this add in `services/auth-service/src/index.ts` :
+
+```ts
+import { closePublisher, initPublisher } from "@/messaging/event-publishing";
+
+//...
+const main = async () => {
+  try {
+    //... initial awaits part
+    await initPublisher();
+  }
+
+  // ... inside 'const shutdown'
+  Promise.all([closeDatabase(), closePublisher()]) // add 'closePublisher'
+}
+```
+
+then add in `services/auth-service/src/services/auth.service.ts` replace the TODO part with this:
+
+```ts
+publishUserRegistered(userData);
+```
+
+> this will publish the event that will be consumed by user-services
+
+## Setup User-Service
+
+Open folder and initialize service installing also needed packages:
+
+```sh
+cd services/user-service
+bun init -y
+bun add cors express helmet
+bun add -d @types/cors @types/express @types/helmet
+mkdir src
+```
+
+Then from **package.json** of `/auth-service` copy all "scripts" attributes and paste in the same file of `/user-service` .
+
+> Copy also the previous part with type and other attributes (and the common in "dependencies") like this:
+
+```json
+"name": "@chatapp/user-service",
+"module": "index.ts",
+"type": "module",
+"private": true,
+"main": "dist/index.js",
+"types": "dist/index.d.ts",
+"scripts": {
+  "build": "tsc --project tsconfig.json",
+  "dev": "bun --watch src/index.ts",
+  "start": "node dist/index.js",
+  "lint": "eslint 'src/**/*.ts'",
+  "typecheck": "tsc --noEmit --project tsconfig.json",
+  "test": "echo 'No tests yet'",
+  "format": "prettier --check 'src/**/*.ts'"
+},
+"dependencies": {
+  "@chatapp/common": "workspace:^",
+}
+```
+
+For source binding complete the `tsconfig.json` file with this attributes:
+
+```ts
+{
+  "compilerOptions": {
+    "composite": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    // [...]
+  },
+  "include": ["src"],
+  "references": [{ "path": "../../packages/common" }]
+}
+```
+
+Then copy form other folders these ones :
+
+- `/config` : from `/gateway-service/src/`.
+- `index.ts` : from `/gateway-service/src/`. Update log and `env.USER_SERVICE_PORT;`.
+- `/middleware` : from `auth-service/src/`.
+- `/utils` : from `auth-service/src/`. In logger.ts , change name in **user-service**
+
+In `/config/env.ts` update line for port settings and service name like this:
+
+```ts
+import "dotenv/config";
+import { createEnv, z } from "@chatapp/common";
+
+const envSchema = z.object({
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
+  USER_SERVICE_PORT: z.coerce.number().int().min(0).max(65_535).default(4001),
+  USER_DB_URL: z.string().url(),
+  RABBITMQ_URL: z.string().url().optional(),
+  INTERNAL_API_TOKEN: z.string().min(16),
+});
+
+type EnvType = z.infer<typeof envSchema>;
+
+export const env: EnvType = createEnv(envSchema, {
+  serviceName: "user-service",
+});
+
+export type Env = typeof env;
+```
+
+And in `src/app.ts` add this code:
+
+```ts
+import express, { type Application } from "express";
+import cors from "cors";
+import helmet from "helmet";
+import { errorHandler } from "./middleware/error-handler";
+
+export const createApp = (): Application => {
+  const app = express();
+
+  app.use(helmet());
+  app.use(
+    cors({
+      origin: "*",
+      credentials: true,
+    }),
+  );
+
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+  app.use(createInternalAuthMiddleware(env.INTERNAL_AUTH_TOKEN));
+
+  app.use((_req, res) => {
+    res.status(404).json({ message: "Not found" });
+  });
+
+  app.use(errorHandler);
+
+  return app;
+};
+```
+
+---
+
+Next from minute 4:45:00
+
+https://www.youtube.com/watch?v=nCyvvMjO2ME

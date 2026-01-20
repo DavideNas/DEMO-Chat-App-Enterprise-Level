@@ -1,3 +1,10 @@
 {
-  "cSpell.words": ["chatapp", "mysqld", "pchatapp", "treeify", "UUIDV"]
+  "cSpell.words": [
+    "chatapp",
+    "mysqld",
+    "pchatapp",
+    "rabbitmq",
+    "treeify",
+    "UUIDV"
+  ]
 }
